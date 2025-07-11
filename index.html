@@ -5,7 +5,7 @@
   <title>4レーン譜面エディタ (内部96分固定)</title>
   <style>
     body { margin: 0; font-family: sans-serif; }
-    .toolbar { position: sticky; top: 0; background: #eee; padding: 5px; display: flex; align-items: center; gap: 10px; z-index: 10; }
+    .toolbar { position: sticky; top: 0; background: #eee; padding: 5px; display: flex; align-items: center; gap: 8px; z-index: 10; }
     .main { display: flex; }
     canvas { background: #fff; cursor: crosshair; }
     .sidebar { width: 200px; padding: 10px; background: #f9f9f9; font-size: 14px; line-height: 1.4; }
@@ -14,12 +14,15 @@
 </head>
 <body>
   <div class="toolbar">
-    <!-- ツールバー -->
     <label>Mode:
       <label><input type="radio" name="mode" value="tap" checked /> Tap</label>
       <label><input type="radio" name="mode" value="long" /> Long</label>
       <label><input type="radio" name="mode" value="attack" /> Attack</label>
+      <label><input type="radio" name="mode" value="select" /> Select</label>
     </label>
+    <button id="copyBtn" disabled>Copy</button>
+    <button id="pasteBtn" disabled>Paste</button>
+    <button id="deleteBtn" disabled>Delete</button>
     <label>Placement Unit:
       <select id="unitSelect">
         <option value="16">1/16</option>
@@ -39,15 +42,13 @@
     <div class="sidebar">
       <strong>操作説明</strong><br>
       • <strong>Tap モード</strong>: 左クリックでタップノーツを配置<br>
-      • <strong>Long モード</strong>: 長押しノーツを配置（クリックのみ）<br>
-      • <strong>Attack モード</strong>: 長さ 32分音符 のロングノーツを配置<br>
-      • <strong>Placement Unit</strong>: ノーツを吸着させるグリッド精度<br>
-      • <strong>Measures</strong>: 総小節数の設定<br>
-      • <strong>Lane Height</strong>: レーン縦幅の調整<br>
-      • <strong>BPM</strong>: MIDI エクスポート時のテンポ設定<br>
-      • <strong>右クリック</strong>: クリック位置のノーツを削除<br>
-      • <strong>Export MIDI</strong>: 現在の譜面を MIDI ファイル保存<br>
-      • <strong>Import MIDI</strong>: MIDI ファイルから譜面を読み込み
+      • <strong>Long モード</strong>: クリック２回でロングノーツを配置（最短4分音符）<br>
+      • <strong>Attack モード</strong>: 4分音符長のロングノーツを配置<br>
+      • <strong>Select モード</strong>: ドラッグで範囲選択、Copy/Paste/Delete可能<br>
+      • <strong>Copy</strong>: 選択中のノーツをクリップボードへ (Ctrl+C)<br>
+      • <strong>Paste</strong>: クリックした位置を始点にノーツを貼り付け (Ctrl+V)<br>
+      • <strong>Delete</strong>: 選択中のノーツを一括削除<br>
+      • <strong>右クリック</strong>: クリック位置のノーツを削除
     </div>
   </div>
 
@@ -57,7 +58,7 @@
     const { Track, Writer, NoteEvent } = window.MidiWriter;
     const { Midi } = window;
     const INTERNAL_DIV = 96;
-    const ATTACK_UNITS = INTERNAL_DIV / 32;
+    const QUARTER_UNITS = INTERNAL_DIV / 4;
     const canvas = document.getElementById('editor');
     const ctx = canvas.getContext('2d');
     const laneCount = 4;
@@ -70,149 +71,238 @@
 
     const taps = [];
     const longNotes = [];
+    let pendingLong = null;
+
+    // Selection state
+    let selStart = null, selRect = null, isDragging = false;
+    let selectedTaps = [], selectedLong = [];
+    let clipTaps = [], clipLong = [], clipOrigin = 0;
+    let pasteTarget = null;
 
     function resizeCanvas() {
       canvas.width = 800;
-      const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
-      canvas.height = pxPerUnit * INTERNAL_DIV * measureCount;
+      const px = laneHeight / (INTERNAL_DIV / 16);
+      canvas.height = px * INTERNAL_DIV * measureCount;
     }
 
     function draw() {
-      resizeCanvas();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      resizeCanvas(); ctx.clearRect(0,0,canvas.width,canvas.height);
       const laneW = canvas.width / laneCount;
-      const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
-
-      // グリッド描画
-      for (let m = 0; m < measureCount; m++) {
-        const baseY = canvas.height - m * INTERNAL_DIV * pxPerUnit;
+      const px = laneHeight / (INTERNAL_DIV / 16);
+      // grid & lanes
+      for(let m=0;m<measureCount;m++){
+        const base = canvas.height - m*INTERNAL_DIV*px;
         ctx.strokeStyle = '#888'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(0, baseY); ctx.lineTo(canvas.width, baseY); ctx.stroke();
-        ctx.fillStyle = '#000'; ctx.font = '12px sans-serif'; ctx.textBaseline = 'bottom';
-        ctx.fillText(m + 1, 4, baseY - 2);
-        for (let i = 1; i < INTERNAL_DIV; i++) {
-          const y = baseY - i * pxPerUnit;
-          if (i % (INTERNAL_DIV / 4) === 0) { ctx.strokeStyle = '#bbb'; ctx.lineWidth = 1.5; }
-          else if (i % (INTERNAL_DIV / 16) === 0) { ctx.strokeStyle = '#eee'; ctx.lineWidth = 1; }
+        ctx.beginPath(); ctx.moveTo(0,base); ctx.lineTo(canvas.width,base); ctx.stroke();
+        ctx.fillStyle = '#000'; ctx.font = '12px sans-serif'; ctx.textBaseline='bottom';
+        ctx.fillText(m+1,4,base-2);
+        for(let i=1;i<INTERNAL_DIV;i++){
+          const y = base - i*px;
+          if(i % (INTERNAL_DIV/4)===0){ctx.strokeStyle='#bbb'; ctx.lineWidth=1.5;} 
+          else if(i % (INTERNAL_DIV/16)===0){ctx.strokeStyle='#eee'; ctx.lineWidth=1;} 
           else continue;
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
         }
       }
+      ctx.strokeStyle='#888'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(canvas.width,0); ctx.stroke();
+      ctx.strokeStyle='#ccc'; ctx.lineWidth=1;
+      for(let i=0;i<=laneCount;i++){const x=i*laneW; ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();}
 
-      // レーン区切り線
-      ctx.strokeStyle = '#888'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(canvas.width, 0); ctx.stroke();
-      ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1;
-      for (let i = 0; i <= laneCount; i++) {
-        const x = i * laneW;
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      // taps
+      taps.forEach((t,i)=>{
+        const pos = t.measure*INTERNAL_DIV + t.time;
+        const y = canvas.height - pos*px;
+        const x = t.lane*laneW + laneW*0.1;
+        ctx.fillStyle = selectedTaps.includes(i)? '#f88' : '#f00';
+        ctx.fillRect(x, y-laneHeight*0.2, laneW*0.8, laneHeight*0.4);
+      });
+      // long
+      longNotes.forEach((ln,i)=>{
+        const s = ln.startMeasure*INTERNAL_DIV + ln.startUnit;
+        const e = ln.endMeasure*INTERNAL_DIV + ln.endUnit;
+        const y1 = canvas.height - s*px;
+        const y2 = canvas.height - e*px;
+        const height = (y1 - y2);
+        const x  = ln.lane*laneW + laneW*0.1;
+        ctx.fillStyle = selectedLong.includes(i)? 'rgba(255,0,0,0.5)' : 'rgba(0,0,255,0.3)';
+        ctx.fillRect(x, y2, laneW*0.8, height);
+      });
+      // selection rect
+      if(selRect){ ctx.strokeStyle='rgba(0,128,0,0.8)'; ctx.lineWidth=1;
+        const {x,y,w,h}=selRect; ctx.strokeRect(x,y,w,h);
       }
-
-      // タップノーツ描画
-      taps.forEach(t => {
-        const pos = t.measure * INTERNAL_DIV + t.time;
-        const y = canvas.height - pos * pxPerUnit;
-        const x = t.lane * laneW + laneW * 0.1;
-        ctx.fillStyle = '#f00';
-        ctx.fillRect(x, y - laneHeight * 0.2, laneW * 0.8, laneHeight * 0.4);
-      });
-
-      // ロングノーツ描画（アタック含む）
-      longNotes.forEach(ln => {
-        const startPos = ln.startMeasure * INTERNAL_DIV + ln.startUnit;
-        const endPos = ln.endMeasure * INTERNAL_DIV + ln.endUnit;
-        const y1 = canvas.height - startPos * pxPerUnit;
-        const y2 = canvas.height - endPos * pxPerUnit;
-        const x = ln.lane * laneW + laneW * 0.1;
-        ctx.fillStyle = 'rgba(0,0,255,0.3)';
-        ctx.fillRect(x, y2, laneW * 0.8, y1 - y2);
-      });
     }
 
-    function snapGlobalUnit(raw) {
-      const grid = INTERNAL_DIV / unit;
-      const max = INTERNAL_DIV * measureCount - 1;
-      return Math.floor(Math.min(max, Math.max(0, raw)) / grid) * grid;
-    }
+    function getCanvasCoords(evt){ const r=canvas.getBoundingClientRect(); return { x:evt.clientX-r.left, y:evt.clientY-r.top }; }
+    function intersects(rx,ry,rw,rh,x,y,w,h){ return !(rx> x+w || rx+rw< x || ry> y+h || ry+rh< y); }
+    function snap(raw){ const g=INTERNAL_DIV/unit; return Math.floor(Math.min(INTERNAL_DIV*measureCount-1,Math.max(0,raw))/g)*g; }
 
-    window.addEventListener('load', () => {
-      document.querySelectorAll('input[name="mode"]').forEach(el => el.addEventListener('change', e => mode = e.target.value));
-      document.getElementById('unitSelect').addEventListener('change', e => unit = +e.target.value);
-      document.getElementById('laneHeight').addEventListener('input', e => { laneHeight = +e.target.value; draw(); });
-      document.getElementById('measureCount').addEventListener('change', e => { measureCount = +e.target.value; draw(); });
-      document.getElementById('bpm').addEventListener('change', e => bpm = +e.target.value);
+    const copyBtn  = document.getElementById('copyBtn');
+    const pasteBtn = document.getElementById('pasteBtn');
+    const deleteBtn= document.getElementById('deleteBtn');
 
-      canvas.addEventListener('click', e => {
-        const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
-        const laneW = canvas.width / laneCount;
-        const rect = canvas.getBoundingClientRect();
-        const raw = (canvas.height - (e.clientY - rect.top)) / pxPerUnit;
-        const gu = snapGlobalUnit(raw);
-        const m = Math.floor(gu / INTERNAL_DIV);
-        const u = gu % INTERNAL_DIV;
-        const l = Math.floor((e.clientX - rect.left) / laneW);
-        if (mode === 'tap') taps.push({ measure: m, lane: l, time: u });
-        else if (mode === 'long' || mode === 'attack') {
-          const length = (mode === 'attack' ? ATTACK_UNITS : 0);
-          const start = m * INTERNAL_DIV + u;
-          const endTotal = start + length;
-          const endM = Math.floor(endTotal / INTERNAL_DIV);
-          const endU = endTotal % INTERNAL_DIV;
-          longNotes.push({ startMeasure: m, startUnit: u, lane: l, endMeasure: endM, endUnit: endU });
-        }
+    copyBtn.onclick = ()=>{
+      clipTaps = selectedTaps.map(i=> ({...taps[i]}));
+      clipLong = selectedLong.map(i=> ({...longNotes[i]}));
+      const allG = [...clipTaps.map(t=>t.measure*INTERNAL_DIV+t.time), ...clipLong.map(ln=>ln.startMeasure*INTERNAL_DIV+ln.startUnit)];
+      clipOrigin = Math.min(...allG);
+      pasteTarget = null;
+      pasteBtn.disabled = !(clipTaps.length||clipLong.length);
+    };
+    deleteBtn.onclick = ()=>{
+      selectedTaps.sort((a,b)=>b-a).forEach(i=>taps.splice(i,1));
+      selectedLong.sort((a,b)=>b-a).forEach(i=>longNotes.splice(i,1));
+      selectedTaps=[]; selectedLong=[];
+      copyBtn.disabled=true; pasteBtn.disabled=true; deleteBtn.disabled=true;
+      draw();
+    };
+    pasteBtn.onclick = ()=>{
+      if(pasteTarget==null) return;
+      clipTaps.forEach(n=>{
+        const rel = n.measure*INTERNAL_DIV+n.time - clipOrigin;
+        const g   = pasteTarget + rel;
+        taps.push({ measure:Math.floor(g/INTERNAL_DIV), lane:n.lane, time:g%INTERNAL_DIV });
+      });
+      clipLong.forEach(ln=>{
+        const rel = ln.startMeasure*INTERNAL_DIV+ln.startUnit - clipOrigin;
+        const g   = pasteTarget + rel;
+        const dur = ln.endMeasure*INTERNAL_DIV+ln.endUnit - (ln.startMeasure*INTERNAL_DIV+ln.startUnit);
+        const g1  = g + dur;
+        longNotes.push({ startMeasure:Math.floor(g/INTERNAL_DIV), startUnit:g%INTERNAL_DIV,
+          lane:ln.lane, endMeasure:Math.floor(g1/INTERNAL_DIV), endUnit:g1%INTERNAL_DIV });
+      });
+      draw();
+    };
+
+    window.addEventListener('load',()=>{
+      document.querySelectorAll('input[name="mode"]').forEach(e=>e.addEventListener('change',ev=>{
+        mode=ev.target.value; selRect=null; isDragging=false;
+        selectedTaps=[]; selectedLong=[];
+        copyBtn.disabled=true; deleteBtn.disabled=true; pasteBtn.disabled=true;
         draw();
+      }));
+      document.getElementById('unitSelect').addEventListener('change',e=>unit=+e.target.value);
+      document.getElementById('laneHeight').addEventListener('input',e=>{laneHeight=+e.target.value;draw();});
+      document.getElementById('measureCount').addEventListener('change',e=>{measureCount=+e.target.value;draw();});
+      document.getElementById('bpm').addEventListener('change',e=>bpm=+e.target.value);
+
+      document.addEventListener('keydown', e=>{
+        if(mode==='select' && e.ctrlKey && (e.key==='c' || e.key==='C')){ if(!copyBtn.disabled) copyBtn.click(); e.preventDefault(); }
+        if(mode==='select' && e.ctrlKey && (e.key==='v' || e.key==='V')){ if(!pasteBtn.disabled) pasteBtn.click(); e.preventDefault(); }
       });
 
-      canvas.addEventListener('contextmenu', e => {
-        e.preventDefault();
-        const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
-        const laneW = canvas.width / laneCount;
-        const rect = canvas.getBoundingClientRect();
-        const raw = (canvas.height - (e.clientY - rect.top)) / pxPerUnit;
-        const gu = Math.round(raw);
-        const m = Math.floor(gu / INTERNAL_DIV);
-        const u = gu % INTERNAL_DIV;
-        const l = Math.floor((e.clientX - rect.left) / laneW);
-        const tapIdx = taps.findIndex(t => t.measure === m && t.lane === l && t.time === u);
-        if (tapIdx >= 0) { taps.splice(tapIdx, 1); draw(); return; }
-        const longIdx = longNotes.findIndex(ln => {
-          const start = ln.startMeasure * INTERNAL_DIV + ln.startUnit;
-          const end = ln.endMeasure * INTERNAL_DIV + ln.endUnit;
-          return start <= gu && gu <= end && ln.lane === l;
+      canvas.addEventListener('mousedown',e=>{
+        if(mode==='select'){
+          isDragging=true; selStart=getCanvasCoords(e); selRect=null;
+          selectedTaps=[]; selectedLong=[];
+          copyBtn.disabled=true; deleteBtn.disabled=true; pasteBtn.disabled=true;
+        }
+      });
+      canvas.addEventListener('mousemove',e=>{
+        if(isDragging && mode==='select'){
+          const cur=getCanvasCoords(e);
+          const x= Math.min(selStart.x,cur.x), y=Math.min(selStart.y,cur.y);
+          const w= Math.abs(cur.x-selStart.x), h=Math.abs(cur.y-selStart.y);
+          selRect={x,y,w,h}; draw();
+        }
+      });
+      canvas.addEventListener('mouseup',e=>{
+        if(isDragging && mode==='select'){
+          isDragging=false;
+          const laneW=canvas.width/laneCount;
+          const px=laneHeight/(INTERNAL_DIV/16);
+          if(selRect){ const {x,y,w,h}=selRect;
+            taps.forEach((t,i)=>{
+              const pos=t.measure*INTERNAL_DIV+t.time;
+              const cy=canvas.height-pos*px;
+              const cx=t.lane*laneW+laneW*0.1;
+              if(intersects(x,y,w,h,cx,cy-laneHeight*0.2,laneW*0.8,laneHeight*0.4)) selectedTaps.push(i);
+            });
+            longNotes.forEach((ln,i)=>{
+              const s=ln.startMeasure*INTERNAL_DIV+ln.startUnit;
+              const e=ln.endMeasure*INTERNAL_DIV+ln.endUnit;
+              const y2=canvas.height-e*px;
+              const h2=( (ln.startMeasure*INTERNAL_DIV+ln.startUnit) - (ln.endMeasure*INTERNAL_DIV+ln.endUnit)) * px * -1;
+              const x2=ln.lane*laneW+laneW*0.1;
+              if(intersects(x,y,w,h,x2,y2,laneW*0.8,h2)) selectedLong.push(i);
+            });
+          }
+          selRect=null; draw();
+          if(selectedTaps.length||selectedLong.length) deleteBtn.disabled=false, copyBtn.disabled=false;
+        }
+      });
+
+      canvas.addEventListener('click',e=>{
+        const coord=getCanvasCoords(e);
+        const raw=(canvas.height-coord.y)/(laneHeight/(INTERNAL_DIV/16));
+        const gu=snap(raw);
+        const m=Math.floor(gu/INTERNAL_DIV), u=gu%INTERNAL_DIV;
+        const lane=Math.floor(coord.x/(canvas.width/laneCount));
+        if(mode==='select' && (clipTaps.length||clipLong.length)){
+          pasteTarget=m*INTERNAL_DIV+u;
+          pasteBtn.disabled=false;
+        }
+        if(mode==='tap'){
+          taps.push({measure:m,lane,time:u}); draw();
+        } else if(mode==='long'){
+          if(pendingLong===null) pendingLong={m,u,lane};
+          else{
+            const dur=(m*INTERNAL_DIV+u)-(pendingLong.m*INTERNAL_DIV+pendingLong.u);
+            if(dur<QUARTER_UNITS) alert('長さは最低4分音符必要');
+            else longNotes.push({startMeasure:pendingLong.m,startUnit:pendingLong.u,lane:pendingLong.lane,endMeasure:m,endUnit:u});
+            pendingLong=null; draw();
+          }
+        } else if(mode==='attack'){
+          const start=m*INTERNAL_DIV+u;
+          const end=start+QUARTER_UNITS;
+          longNotes.push({startMeasure:m,startUnit:u,lane,endMeasure:Math.floor(end/INTERNAL_DIV),endUnit:end%INTERNAL_DIV});
+          draw();
+        }
+      });
+
+      canvas.addEventListener('contextmenu',e=>{
+        if(mode==='select') return;
+        e.preventDefault(); const coord=getCanvasCoords(e);
+        const raw=(canvas.height-coord.y)/(laneHeight/(INTERNAL_DIV/16));
+        const gu=Math.round(raw);
+        const m=Math.floor(gu/INTERNAL_DIV), u=gu%INTERNAL_DIV;
+        const lane=Math.floor(coord.x/(canvas.width/laneCount));
+        let idx=taps.findIndex(t=>t.measure===m&&t.lane===lane&&t.time===u);
+        if(idx>=0){taps.splice(idx,1); draw(); return;}
+        idx=longNotes.findIndex(ln=>{
+          const s=ln.startMeasure*INTERNAL_DIV+ln.startUnit;
+          const e2=ln.endMeasure*INTERNAL_DIV+ln.endUnit;
+          return s<=gu&&gu<=e2&&ln.lane===lane;
         });
-        if (longIdx >= 0) { longNotes.splice(longIdx, 1); draw(); return; }
+        if(idx>=0){longNotes.splice(idx,1); draw(); return;}
       });
 
-      document.getElementById('exportMidi').addEventListener('click', () => {
-        const track = new Track(); track.setTempo(bpm);
-        const ppq = 128;
-        const tpu = ppq * 4 / INTERNAL_DIV;
-        taps.forEach(t => track.addEvent(new NoteEvent({ pitch: ['C1','D1','E1','F1'][t.lane], duration: 'T'+tpu, startTick: (t.measure*INTERNAL_DIV+t.time)*tpu })));
-        longNotes.forEach(ln => {
-          const st = (ln.startMeasure*INTERNAL_DIV+ln.startUnit)*tpu;
-          const du = ((ln.endMeasure*INTERNAL_DIV+ln.endUnit) - (ln.startMeasure*INTERNAL_DIV+ln.startUnit)) * tpu;
-          track.addEvent(new NoteEvent({ pitch: ['C2','D2','E2','F2'][ln.lane], duration: 'T'+du, startTick: st }));
+      document.getElementById('exportMidi').addEventListener('click',()=>{
+        const track=new Track(); track.setTempo(bpm);
+        const ppq=128, tpu=ppq*4/INTERNAL_DIV;
+        taps.forEach(t=>track.addEvent(new NoteEvent({pitch:['C1','D1','E1','F1'][t.lane],duration:'T'+tpu,startTick:(t.measure*INTERNAL_DIV+t.time)*tpu})));
+        longNotes.forEach(ln=>{ const st=(ln.startMeasure*INTERNAL_DIV+ln.startUnit)*tpu;
+          const du=((ln.endMeasure*INTERNAL_DIV+ln.endUnit)-(ln.startMeasure*INTERNAL_DIV+ln.startUnit))*tpu;
+          track.addEvent(new NoteEvent({pitch:['C2','D2','E2','F2'][ln.lane],duration:'T'+du,startTick:st}));
         });
-        const writer = new Writer([track]); const bytes = writer.buildFile();
-        const blob = new Blob([new Uint8Array(bytes)],{type:'audio/midi'});
-        const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='chart.mid'; a.click(); URL.revokeObjectURL(url);
+        const writer=new Writer([track]); const b=writer.buildFile();
+        const blob=new Blob([new Uint8Array(b)],{type:'audio/midi'});
+        const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='chart.mid';a.click();
       });
 
-      document.getElementById('importMidi').addEventListener('change', async e => {
-        const file = e.target.files[0]; if (!file) return;
-        const buf = await file.arrayBuffer(); const midi = new Midi(buf);
-        taps.length = 0; longNotes.length = 0;
-        const ppq = midi.header.ppq; const tpu = ppq * 4 / INTERNAL_DIV;
-        midi.tracks.forEach(track => track.notes.forEach(n => {
-          const name = n.name.charAt(0); const oct = parseInt(n.name.slice(1));
-          const lane = ['C','D','E','F'].indexOf(name); if (lane<0) return;
-          const total = Math.round(n.ticks/tpu); const m = Math.floor(total/INTERNAL_DIV); const u = total%INTERNAL_DIV;
-          if (oct===1) taps.push({measure:m,lane,time:u});
-          else if(oct===2) {
-            const dur = Math.round(n.durationTicks/tpu);
-            const start = m*INTERNAL_DIV+u; const endTotal = start+dur;
-            const endM = Math.floor(endTotal/INTERNAL_DIV); const endU = endTotal%INTERNAL_DIV;
-            longNotes.push({startMeasure:m,startUnit:u,lane,endMeasure:endM,endUnit:endU});
+      document.getElementById('importMidi').addEventListener('change',async e=>{
+        const file=e.target.files[0]; if(!file) return;
+        const buf=await file.arrayBuffer(); const midi=new Midi(buf);
+        taps.length=0; longNotes.length=0;
+        const ppq=midi.header.ppq, tpu=ppq*4/INTERNAL_DIV;
+        midi.tracks.forEach(track=> track.notes.forEach(n=>{
+          const name=n.name.charAt(0), oct=parseInt(n.name.slice(1));
+          const lane=['C','D','E','F'].indexOf(name); if(lane<0) return;
+          const total=Math.round(n.ticks/tpu), m=Math.floor(total/INTERNAL_DIV), u=total%INTERNAL_DIV;
+          if(oct===1) taps.push({measure:m,lane,time:u});
+          else if(oct===2){ const dur=Math.round(n.durationTicks/tpu);
+            longNotes.push({startMeasure:m,startUnit:u,lane,endMeasure:Math.floor((total+dur)/INTERNAL_DIV),endUnit:(total+dur)%INTERNAL_DIV});
           }
         })); draw();
       });
@@ -222,4 +312,3 @@
   </script>
 </body>
 </html>
-
