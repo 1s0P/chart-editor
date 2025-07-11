@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>4レーン譜面エディタ (内部96分固定)</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    .toolbar { position: sticky; top: 0; background: #eee; padding: 5px; display: flex; align-items: center; gap: 10px; z-index: 10; }
+    .main { display: flex; }
+    canvas { background: #fff; cursor: crosshair; }
+    .sidebar { width: 200px; padding: 10px; background: #f9f9f9; font-size: 14px; line-height: 1.4; }
+    label, select, input, button { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <!-- ツールバー -->
+    <label>Mode:
+      <label><input type="radio" name="mode" value="tap" checked /> Tap</label>
+      <label><input type="radio" name="mode" value="long" /> Long</label>
+      <label><input type="radio" name="mode" value="attack" /> Attack</label>
+    </label>
+    <label>Placement Unit:
+      <select id="unitSelect">
+        <option value="16">1/16</option>
+        <option value="24">1/24</option>
+        <option value="32">1/32</option>
+      </select>
+    </label>
+    <label>Measures: <input type="number" id="measureCount" value="4" min="1" style="width:50px;" /></label>
+    <label>Lane Height: <input type="range" id="laneHeight" min="20" max="60" value="20" /></label>
+    <label>BPM: <input type="number" id="bpm" value="120" style="width:60px;" /></label>
+    <button id="exportMidi">Export MIDI</button>
+    <label>Import MIDI: <input type="file" id="importMidi" accept=".mid" /></label>
+  </div>
+
+  <div class="main">
+    <canvas id="editor"></canvas>
+    <div class="sidebar">
+      <strong>操作説明</strong><br>
+      • <strong>Tap モード</strong>: 左クリックでタップノーツを配置<br>
+      • <strong>Long モード</strong>: 長押しノーツを配置（クリックのみ）<br>
+      • <strong>Attack モード</strong>: 長さ 32分音符 のロングノーツを配置<br>
+      • <strong>Placement Unit</strong>: ノーツを吸着させるグリッド精度<br>
+      • <strong>Measures</strong>: 総小節数の設定<br>
+      • <strong>Lane Height</strong>: レーン縦幅の調整<br>
+      • <strong>BPM</strong>: MIDI エクスポート時のテンポ設定<br>
+      • <strong>右クリック</strong>: クリック位置のノーツを削除<br>
+      • <strong>Export MIDI</strong>: 現在の譜面を MIDI ファイル保存<br>
+      • <strong>Import MIDI</strong>: MIDI ファイルから譜面を読み込み
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/midi-writer-js/browser/midiwriter.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi/build/Midi.min.js"></script>
+  <script>
+    const { Track, Writer, NoteEvent } = window.MidiWriter;
+    const { Midi } = window;
+    const INTERNAL_DIV = 96;
+    const ATTACK_UNITS = INTERNAL_DIV / 32;
+    const canvas = document.getElementById('editor');
+    const ctx = canvas.getContext('2d');
+    const laneCount = 4;
+
+    let laneHeight = +document.getElementById('laneHeight').value;
+    let measureCount = +document.getElementById('measureCount').value;
+    let bpm = +document.getElementById('bpm').value;
+    let mode = 'tap';
+    let unit = +document.getElementById('unitSelect').value;
+
+    const taps = [];
+    const longNotes = [];
+
+    function resizeCanvas() {
+      canvas.width = 800;
+      const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
+      canvas.height = pxPerUnit * INTERNAL_DIV * measureCount;
+    }
+
+    function draw() {
+      resizeCanvas();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const laneW = canvas.width / laneCount;
+      const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
+
+      // グリッド描画
+      for (let m = 0; m < measureCount; m++) {
+        const baseY = canvas.height - m * INTERNAL_DIV * pxPerUnit;
+        ctx.strokeStyle = '#888'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(0, baseY); ctx.lineTo(canvas.width, baseY); ctx.stroke();
+        ctx.fillStyle = '#000'; ctx.font = '12px sans-serif'; ctx.textBaseline = 'bottom';
+        ctx.fillText(m + 1, 4, baseY - 2);
+        for (let i = 1; i < INTERNAL_DIV; i++) {
+          const y = baseY - i * pxPerUnit;
+          if (i % (INTERNAL_DIV / 4) === 0) { ctx.strokeStyle = '#bbb'; ctx.lineWidth = 1.5; }
+          else if (i % (INTERNAL_DIV / 16) === 0) { ctx.strokeStyle = '#eee'; ctx.lineWidth = 1; }
+          else continue;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+        }
+      }
+
+      // レーン区切り線
+      ctx.strokeStyle = '#888'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(canvas.width, 0); ctx.stroke();
+      ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1;
+      for (let i = 0; i <= laneCount; i++) {
+        const x = i * laneW;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+
+      // タップノーツ描画
+      taps.forEach(t => {
+        const pos = t.measure * INTERNAL_DIV + t.time;
+        const y = canvas.height - pos * pxPerUnit;
+        const x = t.lane * laneW + laneW * 0.1;
+        ctx.fillStyle = '#f00';
+        ctx.fillRect(x, y - laneHeight * 0.2, laneW * 0.8, laneHeight * 0.4);
+      });
+
+      // ロングノーツ描画（アタック含む）
+      longNotes.forEach(ln => {
+        const startPos = ln.startMeasure * INTERNAL_DIV + ln.startUnit;
+        const endPos = ln.endMeasure * INTERNAL_DIV + ln.endUnit;
+        const y1 = canvas.height - startPos * pxPerUnit;
+        const y2 = canvas.height - endPos * pxPerUnit;
+        const x = ln.lane * laneW + laneW * 0.1;
+        ctx.fillStyle = 'rgba(0,0,255,0.3)';
+        ctx.fillRect(x, y2, laneW * 0.8, y1 - y2);
+      });
+    }
+
+    function snapGlobalUnit(raw) {
+      const grid = INTERNAL_DIV / unit;
+      const max = INTERNAL_DIV * measureCount - 1;
+      return Math.floor(Math.min(max, Math.max(0, raw)) / grid) * grid;
+    }
+
+    window.addEventListener('load', () => {
+      document.querySelectorAll('input[name="mode"]').forEach(el => el.addEventListener('change', e => mode = e.target.value));
+      document.getElementById('unitSelect').addEventListener('change', e => unit = +e.target.value);
+      document.getElementById('laneHeight').addEventListener('input', e => { laneHeight = +e.target.value; draw(); });
+      document.getElementById('measureCount').addEventListener('change', e => { measureCount = +e.target.value; draw(); });
+      document.getElementById('bpm').addEventListener('change', e => bpm = +e.target.value);
+
+      canvas.addEventListener('click', e => {
+        const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
+        const laneW = canvas.width / laneCount;
+        const rect = canvas.getBoundingClientRect();
+        const raw = (canvas.height - (e.clientY - rect.top)) / pxPerUnit;
+        const gu = snapGlobalUnit(raw);
+        const m = Math.floor(gu / INTERNAL_DIV);
+        const u = gu % INTERNAL_DIV;
+        const l = Math.floor((e.clientX - rect.left) / laneW);
+        if (mode === 'tap') taps.push({ measure: m, lane: l, time: u });
+        else if (mode === 'long' || mode === 'attack') {
+          const length = (mode === 'attack' ? ATTACK_UNITS : 0);
+          const start = m * INTERNAL_DIV + u;
+          const endTotal = start + length;
+          const endM = Math.floor(endTotal / INTERNAL_DIV);
+          const endU = endTotal % INTERNAL_DIV;
+          longNotes.push({ startMeasure: m, startUnit: u, lane: l, endMeasure: endM, endUnit: endU });
+        }
+        draw();
+      });
+
+      canvas.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        const pxPerUnit = laneHeight / (INTERNAL_DIV / 16);
+        const laneW = canvas.width / laneCount;
+        const rect = canvas.getBoundingClientRect();
+        const raw = (canvas.height - (e.clientY - rect.top)) / pxPerUnit;
+        const gu = Math.round(raw);
+        const m = Math.floor(gu / INTERNAL_DIV);
+        const u = gu % INTERNAL_DIV;
+        const l = Math.floor((e.clientX - rect.left) / laneW);
+        const tapIdx = taps.findIndex(t => t.measure === m && t.lane === l && t.time === u);
+        if (tapIdx >= 0) { taps.splice(tapIdx, 1); draw(); return; }
+        const longIdx = longNotes.findIndex(ln => {
+          const start = ln.startMeasure * INTERNAL_DIV + ln.startUnit;
+          const end = ln.endMeasure * INTERNAL_DIV + ln.endUnit;
+          return start <= gu && gu <= end && ln.lane === l;
+        });
+        if (longIdx >= 0) { longNotes.splice(longIdx, 1); draw(); return; }
+      });
+
+      document.getElementById('exportMidi').addEventListener('click', () => {
+        const track = new Track(); track.setTempo(bpm);
+        const ppq = 128;
+        const tpu = ppq * 4 / INTERNAL_DIV;
+        taps.forEach(t => track.addEvent(new NoteEvent({ pitch: ['C1','D1','E1','F1'][t.lane], duration: 'T'+tpu, startTick: (t.measure*INTERNAL_DIV+t.time)*tpu })));
+        longNotes.forEach(ln => {
+          const st = (ln.startMeasure*INTERNAL_DIV+ln.startUnit)*tpu;
+          const du = ((ln.endMeasure*INTERNAL_DIV+ln.endUnit) - (ln.startMeasure*INTERNAL_DIV+ln.startUnit)) * tpu;
+          track.addEvent(new NoteEvent({ pitch: ['C2','D2','E2','F2'][ln.lane], duration: 'T'+du, startTick: st }));
+        });
+        const writer = new Writer([track]); const bytes = writer.buildFile();
+        const blob = new Blob([new Uint8Array(bytes)],{type:'audio/midi'});
+        const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='chart.mid'; a.click(); URL.revokeObjectURL(url);
+      });
+
+      document.getElementById('importMidi').addEventListener('change', async e => {
+        const file = e.target.files[0]; if (!file) return;
+        const buf = await file.arrayBuffer(); const midi = new Midi(buf);
+        taps.length = 0; longNotes.length = 0;
+        const ppq = midi.header.ppq; const tpu = ppq * 4 / INTERNAL_DIV;
+        midi.tracks.forEach(track => track.notes.forEach(n => {
+          const name = n.name.charAt(0); const oct = parseInt(n.name.slice(1));
+          const lane = ['C','D','E','F'].indexOf(name); if (lane<0) return;
+          const total = Math.round(n.ticks/tpu); const m = Math.floor(total/INTERNAL_DIV); const u = total%INTERNAL_DIV;
+          if (oct===1) taps.push({measure:m,lane,time:u});
+          else if(oct===2) {
+            const dur = Math.round(n.durationTicks/tpu);
+            const start = m*INTERNAL_DIV+u; const endTotal = start+dur;
+            const endM = Math.floor(endTotal/INTERNAL_DIV); const endU = endTotal%INTERNAL_DIV;
+            longNotes.push({startMeasure:m,startUnit:u,lane,endMeasure:endM,endUnit:endU});
+          }
+        })); draw();
+      });
+
+      draw();
+    });
+  </script>
+</body>
+</html>
+
