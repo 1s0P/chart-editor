@@ -383,10 +383,25 @@
         } else if(mode==='long'){
           if(pendingLong===null) pendingLong={m,u,lane};
           else{
-            const dur=(m*INTERNAL_DIV+u)-(pendingLong.m*INTERNAL_DIV+pendingLong.u);
-            if(dur<QUARTER_UNITS) alert('長さは最低4分音符必要');
-            else longNotes.push({startMeasure:pendingLong.m,startUnit:pendingLong.u,lane:pendingLong.lane,endMeasure:m,endUnit:u});
-            pendingLong=null; draw();
+             const start = pendingLong.m * INTERNAL_DIV + pendingLong.u;
+    const end   = m * INTERNAL_DIV + u;
+    const dur   = end - start;
+
+    if (dur <= 0) {
+      // 同じ位置や、始点より上（時間的に前）をクリックした場合は不可
+      alert('終点は始点より下（時間的に後）にしてください');
+    } else {
+      // 4分未満でも許可
+      longNotes.push({
+        startMeasure: pendingLong.m,
+        startUnit:    pendingLong.u,
+        lane:         pendingLong.lane,
+        endMeasure:   m,
+        endUnit:      u
+      });
+    }
+    pendingLong = null;
+    draw();
           }
         }
       });
