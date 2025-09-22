@@ -66,6 +66,7 @@
     const ctx = canvas.getContext('2d');
     const laneCount = 4;
     const sixteenthUnits = INTERNAL_DIV / 16;
+    const EIGHTH_UNITS = INTERNAL_DIV / 8;
 
     let laneHeight   = +document.getElementById('laneHeight').value;
     let measureCount = +document.getElementById('measureCount').value;
@@ -422,15 +423,28 @@
             startTick:(t.measure*INTERNAL_DIV+t.time)*tpu
           }));
         });
-        longNotes.forEach(ln=>{
-          const st=(ln.startMeasure*INTERNAL_DIV+ln.startUnit)*tpu;
-          const du=((ln.endMeasure*INTERNAL_DIV+ln.endUnit)-(ln.startMeasure*INTERNAL_DIV+ln.startUnit))*tpu;
-          track.addEvent(new NoteEvent({
-            pitch:['C2','D2','E2','F2'][ln.lane],
-            duration:'T'+du,
-            startTick:st
-          }));
-        });
+longNotes.forEach(ln=>{
+  const ppq=128, tpu=ppq*4/INTERNAL_DIV;
+
+  const stUnits  = ln.startMeasure*INTERNAL_DIV + ln.startUnit;
+  const endUnits = ln.endMeasure*INTERNAL_DIV + ln.endUnit;
+  const durUnits = endUnits - stUnits;
+
+  let startUnitsForMidi = stUnits;
+  if (durUnits <= QUARTER_UNITS) {
+    startUnitsForMidi = stUnits + EIGHTH_UNITS;
+  }
+
+  const stTick = startUnitsForMidi * tpu;
+  const duTick = durUnits * tpu;
+
+  track.addEvent(new NoteEvent({
+    pitch:['C2','D2','E2','F2'][ln.lane],
+    duration:'T' + duTick,
+    startTick: stTick
+  }));
+});
+
         ticks.forEach(t=>{
           track.addEvent(new NoteEvent({
             pitch:['C3','D3','E3','F3'][t.lane],
@@ -481,13 +495,23 @@
               maxTick = Math.max(maxTick, n.ticks);
             } else if (oct === 2){
               const durUnits = Math.round(n.durationTicks / tpu);
-              const endTotalUnits = totalUnits + durUnits;
-              longNotes.push({
-                startMeasure:m, startUnit:u, lane,
-                endMeasure:Math.floor(endTotalUnits/INTERNAL_DIV),
-                endUnit:endTotalUnits%INTERNAL_DIV
-              });
-              maxTick = Math.max(maxTick, n.ticks + n.durationTicks);
+
+  // エディタ上の開始位置（4分以下なら「前へ」8分戻す）
+  let editorStartUnits = totalUnits;
+  if (durUnits <= QUARTER_UNITS) {
+    editorStartUnits = Math.max(0, totalUnits - EIGHTH_UNITS);
+  }
+  const editorEndUnits = editorStartUnits + durUnits;
+
+  longNotes.push({
+    startMeasure: Math.floor(editorStartUnits / INTERNAL_DIV),
+    startUnit:    editorStartUnits % INTERNAL_DIV,
+    lane,
+    endMeasure:   Math.floor(editorEndUnits / INTERNAL_DIV),
+    endUnit:      editorEndUnits % INTERNAL_DIV
+  });
+
+  maxTick = Math.max(maxTick, n.ticks + n.durationTicks);
             } else if (oct === 3){
               ticks.push({measure:m,lane,time:u});
               maxTick = Math.max(maxTick, n.ticks);
