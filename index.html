@@ -65,6 +65,8 @@
     const canvas = document.getElementById('editor');
     const ctx = canvas.getContext('2d');
     const laneCount = 4;
+    const sixteenthUnits = INTERNAL_DIV / 16;   // 96/16 = 6 内部単位
+    const sixteenthTicks = sixteenthUnits * tpu;
 
     let laneHeight   = +document.getElementById('laneHeight').value;
     let measureCount = +document.getElementById('measureCount').value;
@@ -432,7 +434,7 @@
         ticks.forEach(t=>{
           track.addEvent(new NoteEvent({
             pitch:['C3','D3','E3','F3'][t.lane],
-            duration:'T'+tpu,
+            duration:'T'+sixteenthTicks, 
             startTick:(t.measure*INTERNAL_DIV+t.time)*tpu
           }));
         });
