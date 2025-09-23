@@ -255,6 +255,57 @@
       if(idx>=0){ ticks.splice(idx,1); draw(); return; }
     }
 
+function sanitizeMidiTracks(uint8) {
+  const arr = uint8 instanceof Uint8Array ? uint8 : new Uint8Array(uint8);
+  let i = 0;
+  const out = [];
+
+  const push32 = (n) => out.push((n>>>24)&255, (n>>>16)&255, (n>>>8)&255, n&255);
+
+  while (i < arr.length) {
+    const id = String.fromCharCode(arr[i],arr[i+1],arr[i+2],arr[i+3]);
+    const len = (arr[i+4]<<24)|(arr[i+5]<<16)|(arr[i+6]<<8)|arr[i+7];
+    const bodyStart = i + 8;
+    const bodyEnd   = bodyStart + len;
+
+    if (id !== 'MThd' && id !== 'MTrk') {
+      out.push(arr[i],arr[i+1],arr[i+2],arr[i+3]);
+      push32(len);
+      for (let k = bodyStart; k < bodyEnd; k++) out.push(arr[k]);
+      i = bodyEnd;
+      continue;
+    }
+
+    if (id === 'MThd') {
+      out.push(0x4D,0x54,0x68,0x64); 
+      push32(len);
+      for (let k = bodyStart; k < bodyEnd; k++) out.push(arr[k]);
+      i = bodyEnd;
+      continue;
+    }
+
+    let eotPos = -1;
+    for (let k = bodyStart; k <= bodyEnd - 3; k++) {
+      if (arr[k] === 0xFF && arr[k+1] === 0x2F && arr[k+2] === 0x00) {
+        eotPos = k + 3; 
+        break;
+      }
+    }
+    const newLen = (eotPos > -1 ? (eotPos - bodyStart) : len);
+
+
+    out.push(0x4D,0x54,0x72,0x6B); 
+    push32(newLen);
+    const copyEnd = bodyStart + newLen;
+    for (let k = bodyStart; k < copyEnd; k++) out.push(arr[k]);
+
+    i = bodyEnd;
+  }
+
+  return new Uint8Array(out);
+}
+
+
     window.addEventListener('load', ()=>{
       document.querySelectorAll('input[name="mode"]').forEach(e=>e.addEventListener('change',ev=>{
         mode=ev.target.value; selRect=null; isDragging=false; isTickPainting=false; isErasing=false;
@@ -416,6 +467,7 @@
         const track=new Track(); track.setTempo(bpm);
         const ppq=128, tpu=ppq*4/INTERNAL_DIV;
         const sixteenthTicks = sixteenthUnits * tpu;
+        const quarterTicks = QUARTER_UNITS * tpu;
         taps.forEach(t=>{
           track.addEvent(new NoteEvent({
             pitch:['C1','D1','E1','F1'][t.lane],
@@ -424,7 +476,6 @@
           }));
         });
 longNotes.forEach(ln=>{
-  const ppq=128, tpu=ppq*4/INTERNAL_DIV;
 
   const stUnits  = ln.startMeasure*INTERNAL_DIV + ln.startUnit;
   const endUnits = ln.endMeasure*INTERNAL_DIV + ln.endUnit;
@@ -448,13 +499,16 @@ longNotes.forEach(ln=>{
         ticks.forEach(t=>{
           track.addEvent(new NoteEvent({
             pitch:['C3','D3','E3','F3'][t.lane],
-            duration:'T'+sixteenthTicks, 
+            duration:'T'+quarterTicks, 
             startTick:(t.measure*INTERNAL_DIV+t.time)*tpu
           }));
         });
         const writer=new Writer([track]);
         const b=writer.buildFile();
-        const blob=new Blob([new Uint8Array(b)],{type:'audio/midi'});
+
+        const safe = sanitizeMidiTracks(new Uint8Array(b));
+
+        const blob = new Blob([safe], { type:'audio/midi' });
         const a=document.createElement('a');
         a.href=URL.createObjectURL(blob);
         a.download='chart.mid';
@@ -474,7 +528,7 @@ longNotes.forEach(ln=>{
         }
         bpm = newBpm; document.getElementById('bpm').value = bpm;
 
-        const ppq = midi.header?.ppq || 480;
+        const ppq = midi.header?.ppq || 128;
         const tpu = ppq * 4 / INTERNAL_DIV;
 
         let maxTick = 0;
@@ -496,7 +550,6 @@ longNotes.forEach(ln=>{
             } else if (oct === 2){
               const durUnits = Math.round(n.durationTicks / tpu);
 
-  // エディタ上の開始位置（4分以下なら「前へ」8分戻す）
   let editorStartUnits = totalUnits;
   if (durUnits <= QUARTER_UNITS) {
     editorStartUnits = Math.max(0, totalUnits - EIGHTH_UNITS);
