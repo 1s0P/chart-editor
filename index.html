@@ -476,18 +476,12 @@ function sanitizeMidiTracks(uint8) {
           }));
         });
 longNotes.forEach(ln=>{
-
   const stUnits  = ln.startMeasure*INTERNAL_DIV + ln.startUnit;
   const endUnits = ln.endMeasure*INTERNAL_DIV + ln.endUnit;
   const durUnits = endUnits - stUnits;
 
-  let startUnitsForMidi = stUnits;
-  if (durUnits <= QUARTER_UNITS) {
-    startUnitsForMidi = stUnits + EIGHTH_UNITS;
-  }
-
-  const stTick = startUnitsForMidi * tpu;
-  const duTick = durUnits * tpu;
+  const stTick = stUnits * tpu; 
+  const duTick = (durUnits + QUARTER_UNITS) * tpu; 
 
   track.addEvent(new NoteEvent({
     pitch:['C2','D2','E2','F2'][ln.lane],
@@ -497,12 +491,14 @@ longNotes.forEach(ln=>{
 });
 
         ticks.forEach(t=>{
-          track.addEvent(new NoteEvent({
-            pitch:['C3','D3','E3','F3'][t.lane],
-            duration:'T'+quarterTicks, 
-            startTick:(t.measure*INTERNAL_DIV+t.time)*tpu
-          }));
-        });
+  const posUnits = t.measure*INTERNAL_DIV + t.time;
+  const shifted  = Math.max(0, posUnits + EIGHTH_UNITS);
+  track.addEvent(new NoteEvent({
+    pitch:['C3','D3','E3','F3'][t.lane],
+    duration:'T' + quarterTicks,           
+    startTick: shifted * tpu
+  }));
+});
         const writer=new Writer([track]);
         const b=writer.buildFile();
 
@@ -550,11 +546,10 @@ longNotes.forEach(ln=>{
             } else if (oct === 2){
               const durUnits = Math.round(n.durationTicks / tpu);
 
-  let editorStartUnits = totalUnits;
-  if (durUnits <= QUARTER_UNITS) {
-    editorStartUnits = Math.max(0, totalUnits - EIGHTH_UNITS);
-  }
-  const editorEndUnits = editorStartUnits + durUnits;
+  const editorStartUnits = totalUnits; 
+  const editorDurUnits   = Math.max(1, durUnits - QUARTER_UNITS); 
+
+  const editorEndUnits = editorStartUnits + editorDurUnits;
 
   longNotes.push({
     startMeasure: Math.floor(editorStartUnits / INTERNAL_DIV),
@@ -566,8 +561,12 @@ longNotes.forEach(ln=>{
 
   maxTick = Math.max(maxTick, n.ticks + n.durationTicks);
             } else if (oct === 3){
-              ticks.push({measure:m,lane,time:u});
-              maxTick = Math.max(maxTick, n.ticks);
+              const editorUnits = totalUnits - EIGHTH_UNITS; 
+  const m2 = Math.floor(editorUnits / INTERNAL_DIV);
+  const u2 = editorUnits % INTERNAL_DIV;
+
+  ticks.push({ measure: m2, lane, time: u2 });
+  maxTick = Math.max(maxTick, n.ticks);
             }
           });
         });
