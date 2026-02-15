@@ -1,6 +1,12 @@
 import { INTERNAL_DIV, QUARTER_UNITS, EIGHTH_UNITS } from './constants.js';
 
 const { Midi } = window;
+const LANE_PITCH = {
+  4: ['C','D','E','F'],
+  6: ['C','D','E','F', 'G', 'A'],
+  8: ['C','C#','D','D#','E','F','G','G#'] 
+};
+
 
 export function sanitizeMidiTracks(uint8){
   const arr = uint8 instanceof Uint8Array ? uint8 : new Uint8Array(uint8);
@@ -49,18 +55,19 @@ export function exportMidi(model){
 
   const quarterTicks = WHOLE_TICKS / 4;
   const tapTicks = toTicks(1);
+  const pitchTable = LANE_PITCH[model.laneCount];
 
-  // taps C1-F1 (4 lanes前提のまま：8 lanes化は後でテーブル化)
+  // taps
   model.taps.forEach(t=>{
     const startUnits = t.measure*INTERNAL_DIV + t.time;
     track.addEvent(new NoteEvent({
-      pitch: ['C1','D1','E1','F1'][t.lane],
+      pitch: pitchTable[t.lane]+'1',
       duration: 'T'+tapTicks,
       startTick: toTicks(startUnits)
     }));
   });
 
-  // holds C2-F2（仕様補正あり）
+  // holds
   model.longNotes.forEach(ln=>{
     const s = ln.startMeasure*INTERNAL_DIV + ln.startUnit;
     const e = ln.endMeasure*INTERNAL_DIV + ln.endUnit;
@@ -76,34 +83,34 @@ export function exportMidi(model){
     }
 
     track.addEvent(new NoteEvent({
-      pitch: ['C2','D2','E2','F2'][ln.lane],
+      pitch: pitchTable[ln.lane]+'2',
       duration: 'T'+duTick,
       startTick: stTick
     }));
   });
 
-  // ticks C3-F3（+1/8シフト）
+  // ticks
   model.ticks.forEach(t=>{
     const pos = t.measure*INTERNAL_DIV + t.time;
     const shifted = pos + EIGHTH_UNITS;
     track.addEvent(new NoteEvent({
-      pitch: ['C3','D3','E3','F3'][t.lane],
+      pitch: pitchTable[t.lane]+'3',
       duration: 'T'+quarterTicks,
       startTick: toTicks(shifted)
     }));
   });
 
-  // fx taps C4-F4
+  // fx taps
   model.fxTaps.forEach(t=>{
     const startUnits = t.measure*INTERNAL_DIV + t.time;
     track.addEvent(new NoteEvent({
-      pitch: ['C4','D4','E4','F4'][t.lane],
+      pitch: pitchTable[t.lane]+'4',
       duration: 'T'+tapTicks,
       startTick: toTicks(startUnits)
     }));
   });
 
-  // fx holds C5-F5（仕様補正あり）
+  // fx holds
   model.fxLongNotes.forEach(ln=>{
     const s = ln.startMeasure*INTERNAL_DIV + ln.startUnit;
     const e = ln.endMeasure*INTERNAL_DIV + ln.endUnit;
@@ -119,17 +126,17 @@ export function exportMidi(model){
     }
 
     track.addEvent(new NoteEvent({
-      pitch: ['C5','D5','E5','F5'][ln.lane],
+      pitch: pitchTable[ln.lane]+'5',
       duration: 'T'+duTick,
       startTick: stTick
     }));
   });
 
-  // slash C6/F6（端のみ）
+  // slash
   model.slashFx.forEach(t=>{
     if(t.lane !== 0 && t.lane !== model.laneCount-1) return;
     const startUnits = t.measure*INTERNAL_DIV + t.time;
-    const pitch = (t.lane===0) ? 'C6' : 'F6';
+    const pitch = (t.lane===0) ? 'C6' : ((model.laneCount === 4)? 'F6' : 'A6');
     track.addEvent(new NoteEvent({
       pitch,
       duration: 'T'+tapTicks,
@@ -146,6 +153,7 @@ export async function importMidiToModel(file, model){
   const buf = await file.arrayBuffer();
   const { Midi } = window;
   const midi = new Midi(buf);
+  const pitchTable = LANE_PITCH[model.laneCount];
 
   model.clearAllNotes();
 
@@ -157,16 +165,24 @@ export async function importMidiToModel(file, model){
   const WHOLE_TICKS = ppq * 4;
   const toUnits = (ticks) => Math.round(ticks * INTERNAL_DIV / WHOLE_TICKS);
 
+  const parseName = (name) => {
+  // 例: "C#4" "F1"
+  const m = /^([A-G]#?)(-?\d+)$/.exec(name || '');
+  if(!m) return null;
+  return { note: m[1], oct: Number(m[2]) };
+};
+
   let maxTick = 0;
 
   midi.tracks.forEach(track=>{
     track.notes.forEach(n=>{
-      const name0 = n.name?.charAt(0);
-      const lane = ['C','D','E','F'].indexOf(name0);
-      if(lane < 0) return;
+      const parsed = parseName(n.name);
+      if(!parsed) return;
 
-      const oct = parseInt(n.name?.slice(1));
-      if(Number.isNaN(oct)) return;
+      const { note, oct } = parsed;
+
+      const lane = pitchTable.indexOf(note);
+      if(lane < 0) return;
 
       const startUnits0 = toUnits(n.ticks);
       const durUnits = toUnits(n.durationTicks);
@@ -196,9 +212,11 @@ export async function importMidiToModel(file, model){
         model.addTick(Math.floor(pos/INTERNAL_DIV), lane, pos%INTERNAL_DIV);
         maxTick = Math.max(maxTick, n.ticks);
       }else if(oct===4){
+        if (model.laneCount === 8) return;
         model.addFxTap(m,lane,u);
         maxTick = Math.max(maxTick, n.ticks);
       }else if(oct===5){
+        if (model.laneCount === 8) return;
         if(Math.abs(durUnits - EIGHTH_UNITS) <= 1){
           const startUnits = Math.max(0, startUnits0 - EIGHTH_UNITS);
           const endUnits = startUnits + EIGHTH_UNITS;
@@ -213,8 +231,9 @@ export async function importMidiToModel(file, model){
         }
         maxTick = Math.max(maxTick, n.ticks);
       }else if(oct===6){
+        if (model.laneCount === 8) return;
         const isLeft = (lane===0) && n.name.startsWith('C');
-        const isRight = (lane===3) && n.name.startsWith('F');
+        const isRight = (model.laneCount===4)? ((lane===3) && n.name.startsWith('F')): ((lane===5) && n.name.startsWith('A'));
         if(isLeft || isRight){
           model.addSlashFx(m,lane,u, lane===0?'red':'blue');
         }

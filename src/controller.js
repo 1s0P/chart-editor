@@ -23,6 +23,7 @@ const pasteBtn = document.getElementById('pasteBtn');
 const mirrorPasteBtn = document.getElementById('mirrorPasteBtn');
 const deleteBtn = document.getElementById('deleteBtn');
 const flipBtn = document.getElementById('flipBtn');
+const lanemode = document.getElementById('laneMode');
 
 function updateActionButtons(){
   const hasSel = model.hasSelection();
@@ -170,6 +171,26 @@ function applySelectionRect(){
   redraw();
 }
 
+function updateModeAvailability(){
+  const is8 = (model.laneCount === 8);
+
+  const banned = new Set(['fxTap','fxLong','slashfx']);
+
+  document.querySelectorAll('input[name="mode"]').forEach(r => {
+    if(banned.has(r.value)){
+      r.disabled = is8;
+    }
+  });
+
+  if(is8 && banned.has(mode)){
+    mode = 'tap';
+    const tapRadio = document.querySelector('input[name="mode"][value="tap"]');
+    if(tapRadio) tapRadio.checked = true;
+    pendingLong = null;
+  }
+}
+
+
 // --- UI wiring ---
 window.addEventListener('load', ()=>{
   // mode radio
@@ -186,6 +207,15 @@ window.addEventListener('load', ()=>{
   document.getElementById('laneHeight').addEventListener('input',e=>{ model.setLaneHeight(+e.target.value); redraw(); });
   document.getElementById('measureCount').addEventListener('change',e=>{ model.setMeasureCount(+e.target.value); redraw(); });
   document.getElementById('bpm').addEventListener('change',e=>{ model.setBpm(+e.target.value); });
+  document.getElementById('laneMode').addEventListener('change', e => {model.laneCount = parseInt(e.target.value, 10);
+    updateModeAvailability();
+    redraw();
+    if(model.laneCount === 8 && (mode==='fxTap' || mode==='fxLong' || mode==='slashfx')) {mode = 'tap';}
+  });
+
+  lanemode.addEventListener('change', e => {model.laneCount = parseInt(e.target.value, 10);
+
+  })
 
   // shortcuts
   document.addEventListener('keydown', e=>{
