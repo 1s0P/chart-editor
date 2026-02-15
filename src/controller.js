@@ -356,7 +356,6 @@ window.addEventListener('load', ()=>{
     const file = e.target.files[0]; if(!file) return;
     await importMidiToModel(file, model);
 
-    // UIへ反映（bpm/measureCount）
     document.getElementById('bpm').value = model.bpm;
     document.getElementById('measureCount').value = model.measureCount;
 

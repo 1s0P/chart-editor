@@ -166,7 +166,6 @@ export async function importMidiToModel(file, model){
   const toUnits = (ticks) => Math.round(ticks * INTERNAL_DIV / WHOLE_TICKS);
 
   const parseName = (name) => {
-  // 例: "C#4" "F1"
   const m = /^([A-G]#?)(-?\d+)$/.exec(name || '');
   if(!m) return null;
   return { note: m[1], oct: Number(m[2]) };

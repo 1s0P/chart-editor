@@ -123,7 +123,7 @@ export class ChartModel {
     s.slash.forEach(i => {
       const sfx = this.slashFx[i];
       sfx.lane = mirrorLane(sfx.lane, this.laneCount);
-      // 端色ルール（現仕様）
+
       sfx.color = (sfx.lane===0) ? 'red' : (sfx.lane===this.laneCount-1 ? 'blue' : sfx.color);
     });
   }
